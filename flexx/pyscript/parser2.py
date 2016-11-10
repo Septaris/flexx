@@ -611,6 +611,7 @@ class Parser2(Parser1):
     
     def parse_ListComp(self, node):
         
+        self.push_stack('function', 'listcomp')
         elt = ''.join(self.parse(node.element_node))
         code = ['(function list_comprehension () {', 'var res = [];']
         vars = []
@@ -651,6 +652,10 @@ class Parser2(Parser1):
         code.append('return res;})')  # end function
         code.append('.apply(this)')  # call function
         code.insert(2, 'var %s;' % ', '.join(vars))
+        # Clean vars
+        for var in vars:
+            self.vars.add(var)
+        self.pop_stack()
         return code
         
         # todo: apply the apply(this) trick everywhere where we use a function

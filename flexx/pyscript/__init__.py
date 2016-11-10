@@ -283,4 +283,4 @@ def this_is_js():
     """
     return False
 
-del sys, JSConstant
+del sys
