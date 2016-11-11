@@ -23,6 +23,7 @@ from collections import OrderedDict
 
 from .model import Model, get_model_classes
 from .modules import JSModule, HEADER
+from .asset import Asset, Bundle, solve_dependencies
 from ..pyscript import (py2js, Parser,
                         create_js_module, get_all_std_names, get_full_std_lib)
 from . import logger
@@ -218,289 +219,6 @@ def export_assets_and_data(assets, data, dirname, app_id, clear=False):
             f.write(d)
 
 
-# todo: minification ...
-
-
-# todo: naming
-
-
-class Asset:
-    """ Class to represent an asset (JS or CSS) to be included on the
-    page, defined from one more more sources, and which can have
-    dependencies on other assets.
-    
-    Parameters:
-        name (str): the asset name, e.g. 'foo.js' or 'bar.css'. Can contain
-            slashes to emulate a file system. e.g. 'spam/foo.js'.
-        sources (str, list): the sources to generate this asset from.
-            Can be strings with source code, string uri's, ``Model``
-            subclasses, and (for JS) any PyScript compatible class or function.
-        deps (list): names of assets that this asset depends on, used to
-            resolve the load order. For module assets one can use
-            `'foo.js as foo'` to define the name by which the dependency can be
-            accessed inside the module.
-        exports (list, str, optional): Should not be given for CSS. If given
-            for JS (and not None) the asset is wrapped in an AMD module that
-            exports the given name/names. Note that providing an empty list
-            is interpreted as "make a module without exported names".
-    
-    **Remote assets**
-    
-    If a source is provided as a URI (starting with 'http://', 'https://' or
-    'file://') Flexx will (down)load the code to include it in the final asset.
-    If only name is provided and it is a URI, it is considered a remote asset,
-    i.e. the client will load the asset from elsewhere. Note that
-    ``app.export()`` provides control over how remote assets are handled.
-    """
-    
-    def __init__(self, name=None, sources=None, deps=None, exports=None):
-        
-        # Handle name
-        if name is None:
-            raise TypeError('Assets name must be given (str).')
-        if not isinstance(name, str):
-            raise TypeError('Asset name must be str.')
-        if not name.lower().endswith(('.js', '.css')):
-            raise ValueError('Asset is only for .js and .css assets.')
-        self._name = name
-        isjs = name.lower().endswith('.js')
-        
-        # Handle sources
-        if sources is None:
-            sources = []  # checked below when we know if this is a remote
-        if not isinstance(sources, (tuple, list)):
-            sources = [sources]
-        for source in sources:
-            if not (isinstance(source, str) or
-                    isinstance(source, types.ModuleType) or
-                    (isinstance(source, type) and issubclass(source, Model)) or
-                    (isjs and isinstance(ob, pyscript_types))):
-                raise TypeError('Asset %r cannot convert source %r to %s.' %
-                                (name, source, name.split('.')[-1].upper()))
-        self._sources = list(sources)
-        
-        # Remote source?
-        self._remote = None
-        uri_starts = 'http://', 'https://', 'file://'
-        if name.startswith(uri_starts):
-            self._remote = name
-            self._name = name.replace('\\', '/').split('/')[-1]
-            if len(self._sources):
-                raise TypeError('A remote asset cannot have sources: %s' % name)
-        elif len(self._sources) == 0:
-            raise TypeError('An asset cannot be without sources '
-                            '(unless its a remote asset).')
-        
-        # Handle deps
-        if deps is None and self._remote:
-            deps = []
-        if deps is None:
-            raise TypeError('Assets deps must be given, '
-                             'use empty list if it has no dependencies.')
-        if not isinstance(deps, (tuple, list)):
-            raise TypeError('Asset deps must be a tuple/list.')
-        if not all(isinstance(dep, str) for dep in deps):
-            raise TypeError('Asset deps\' elements must be str.')
-        # Handler "as" in deps
-        self._deps = [d.split(' as ')[0] for d in deps]
-        self._imports = [d for d in deps if ' as ' in d]
-        
-        # Handle exports
-        self._need_pyscript_std = False
-        if not isjs:
-            if exports is not None:
-                raise TypeError('Assets exports must *not* be given for CSS assets.')
-            exports = None
-        if exports is None:
-            self._exports = None
-        elif isinstance(exports, str):
-            self._exports = str(exports)
-        elif isinstance(exports, (tuple, list)):
-            if not all(isinstance(export, str) for export in exports):
-                raise TypeError('Asset exports\' elements must be str.')
-            self._exports = list(exports)
-        else:
-            raise TypeError('Asset exports must be a None or list.')
-        
-        # Cache -> total code is generated just once
-        self._cache = None
-        if not self._remote:
-            self.to_string()  # Generate code now
-    
-    def __repr__(self):
-        return '<%s %r at 0x%0x>' % (self.__class__.__name__, self._name, id(self))
-        
-    @property
-    def name(self):
-        """ The (file) name of this asset.
-        """
-        return self._name
-    
-    @property
-    def remote(self):
-        """ If the asset is remote (client will load it from elsewhere), then 
-        this is the corresponding URI. Otherwise this is None.
-        """
-        return self._remote
-    
-    @property
-    def is_module(self):
-        """ Whether this asset is wrapped inside an AMD JS module.
-        """
-        return self._exports is not None
-    
-    @property
-    def deps(self):
-        """ The list of dependencies for this JS/CSS asset.
-        """
-        return tuple(self._deps)
-    
-    @property
-    def sources(self):
-        """ The list of sources. Each source can be:
-        
-        * A string of JS/CSS code.
-        * A filename or URI (start with "file://", "http://" or "https://"):
-          the code is (down)loaded on the server.
-        * A subclass of ``Model``: the corresponding JS/CSS is extracted.
-        * Any other Python function ot class: JS is generated via PyScript.
-        * A Python module is converted to JS as a whole.
-        """
-        return tuple(self._sources)
-    
-    @property
-    def exports(self):
-        """ None if the asset is not a module asset. If it is, ``exports``
-        is a str or list of names that this JS module should export. Is
-        auto-populated with the names of classes provided in the code list.
-        """
-        if isinstance(self._exports, list):
-            return tuple(self._exports)
-        return self._exports  # str or None
-
-    def to_html(self, path='{}', link=2):
-        """ Get HTML element tag to include in the document.
-        
-        Parameters:
-            path (str): the path of this asset, in which '{}' can be used as
-                a placeholder for the asset name.
-            link (int): whether to link to this asset. If 0, the asset is
-                embedded. If 1, the asset is linked (and served by our server
-                as a separate file). If 2 (default) remote assets remain remote.
-        """
-        path = path.replace('{}', self.name)
-        
-        if self.name.lower().endswith('.js'):
-            if not link:
-                return "<script id='%s'>%s</script>" % (self.name, self.to_string())
-            elif link >= 2 and self._remote:
-                return "<script src='%s' id='%s'></script>" % (self._remote, self.name)
-            else:
-                return "<script src='%s' id='%s'></script>" % (path, self.name)
-        elif self.name.lower().endswith('.css'):
-            if not link:
-                return "<style id='%s'>%s</style>" % (self.name, self.to_string())
-            elif link >= 2 and self._remote:
-                t = "<link rel='stylesheet' type='text/css' href='%s' id='%s' />"
-                return t % (self._remote, self.name)
-            else:
-                t = "<link rel='stylesheet' type='text/css' href='%s' id='%s' />"
-                return t % (path, self.name)
-        else:  # pragma: no cover
-            raise NameError('Assets must be .js or .css')
-    
-    def to_string(self):
-        """ Get the string code provided by this asset. This is what
-        gets served to the client.
-        """
-        if self._cache is None:
-            if self.is_module:
-                # Create JS module, but also take care of inserting PyScript std.
-                lib = 'pyscript-std.js'
-                code, names = self._get_code_and_names()
-                if names and isinstance(self._exports, list):
-                    self._exports.extend(names)
-                if self._need_pyscript_std and lib not in self._imports:
-                    self._imports.append(lib)
-                if lib in self._imports:
-                    self._imports[self._imports.index(lib)] = lib + ' as _py'
-                    func_names, method_names = get_all_std_names()
-                    pre1 = ', '.join(['%s = _py.%s' % (n, n) for n in func_names])
-                    pre2 = ', '.join(['%s = _py.%s' % (n, n) for n in method_names])
-                    code.insert(0, 'var %s;\nvar %s;' % (pre1, pre2))
-                self._cache = create_js_module(self.name, '\n\n'.join(code), 
-                                            self._imports, self._exports, 'amd-flexx')
-            elif self.remote:
-                self._cache = self._handle_uri(self.remote)
-            else:
-                code, names = self._get_code_and_names()
-                self._cache = '\n\n'.join(code)
-            if self._need_pyscript_std or self.name.startswith('pyscript-std'):
-                self._cache = HEADER + '\n\n' + self._cache  # Add license header
-        return self._cache
-    
-    def _get_code_and_names(self):
-        """ Get the code and public class/function names of the sources.
-        """
-        code = []
-        names = []
-        for ob in self.sources:
-            c, names2 = self._convert_to_code(ob)
-            if c:
-                code.append(c)
-                names.extend([n for n in names2 if n and not n.startswith('_')])
-        if not (len(code) == 1 and '\n' not in code[0]):
-            code.append('')
-        return code, names
-    
-    def _convert_to_code(self, ob):
-        """ Convert object to JS/CSS.
-        """
-        isjs = self.name.lower().endswith('.js')
-        names = []
-        
-        if isinstance(ob, str):
-            c = self._handle_uri(ob)
-        elif isinstance(ob, type) and issubclass(ob, Model):
-            names.append(ob.__name__)
-            c = ob.JS.CODE if isjs else ob.CSS
-            self._need_pyscript_std = True
-        elif isinstance(ob, types.ModuleType):
-            fname = ob.__file__
-            py = open(fname, 'rb').read().decode()
-            try:
-                parser = Parser(py, fname, inline_stdlib=False, docstrings=False)
-                c = parser.dump()
-            except Exception as err:
-                raise ValueError('Asset %r cannot convert %r to JS:\n%s' %
-                                 (self.name, ob, str(err)))
-            names.extend(list(parser.vars))  # todo: only defined vars
-            self._need_pyscript_std = True
-        elif isjs and isinstance(ob, (type, types.FunctionType)):
-            try:
-                c = py2js(ob, inline_stdlib=False, docstrings=False)
-                self._need_pyscript_std = True
-            except Exception as err:
-                raise ValueError('Asset %r cannot convert %r to JS:\n%s' %
-                                 (self.name, ob, str(err)))
-            names.append(ob.__name__)
-        else:  # pragma: no cover - this should not happen
-            raise ValueError('Asset %r cannot convert object %r to %s.' %
-                             (self.name, ob, self.name.split('.')[-1].upper()))
-        return c.strip(), names
-    
-    def _handle_uri(self, s):
-        if s.startswith(('http://', 'https://')):
-            return urlopen(s, timeout=5.0).read().decode()
-        elif s.startswith('file://'):
-            fname = s.split('//', 1)[1]
-            if sys.platform.startswith('win'):
-                fname = fname.lstrip('/')
-            return open(fname, 'rb').read().decode()
-        else:
-            return s
-
-
 class AssetStore:
     """
     Provider of shared assets (CSS, JavaScript) and data (images, etc.).
@@ -514,27 +232,27 @@ class AssetStore:
         self._modules = dict()
         self._assets = OrderedDict()
         self._data = {}
-        self.add_shared_asset(Asset('reset.css', RESET, []))
-        self.add_shared_asset(Asset('flexx-loader.js', LOADER, [], None))
+        self.add_shared_asset('reset.css', RESET)
+        self.add_shared_asset('flexx-loader.js', LOADER)
         func_names, method_names = get_all_std_names()
-        self.add_shared_asset(Asset('pyscript-std.js', get_full_std_lib(), [],
-                                    func_names + method_names))
+        # todo: wrappyscript-std in a module
+        std_mod = create_js_module('pyscript-std.js', get_full_std_lib(),
+                                   [], func_names + method_names)
+        self.add_shared_asset('pyscript-std.js', HEADER + std_mod)
     
     def __repr__(self):
-        names1 = ', '.join([repr(name) for name in self._assets])
-        names2 = ', '.join([repr(name) for name in self._data])
-        return '<AssetStore with assets: %s, and data %s>' % (names1, names2)
+        t = '<AssetStore with %i assets, and %i data>'
+        return t % (len(self._assets), len(self._data))
     
     def create_module_assets(self, *args, **kwargs):
         # Backward compatibility
-        raise RuntimeError('create_module_assets is deprecated. Use '
-                           'get_module_classes() plus add_shared_asset() instead.')
-    
+        raise RuntimeError('create_module_assets is deprecated and no '
+                           'longer necessary.')
     
     @property
     def modules(self):
-        """ The JS modules known to the asset store. Each module corresponds to
-        a Python module.
+        """ The JSModule objects known to the asset store. Each module
+        corresponds to a Python module.
         """
         return self._modules
     
@@ -547,17 +265,32 @@ class AssetStore:
         new_modules = []
         for cls in Model.CLASSES:
             if cls.__module__ not in self._modules:
-                module = Module(sys.modules[cls.__module__])
-                self._modules[cls.__module__] = module
+                module = JSModule(sys.modules[cls.__module__], self._modules)
                 new_modules.append(module)
-        logger.info('Asset store collected %i modules.' % len(new_modules))
+            self._modules[cls.__module__].use_variable(cls.__name__)
         
-        # Make asset for the modules
-        # todo: optionally bundle the assets
-        for mod in self._modules.values():
-            if( mod.name + '.js') not in self._assets:
-                self.add_shared_asset(name=mod.name + '.js', sources=mod.get_js(), deps=[])
-                self.add_shared_asset(name=mod.name + '.css', sources=mod.get_css(), deps=[])
+        bcount = 0
+        for mod in new_modules:
+            # Get names of bundles to add this module to
+            name = mod.name
+            bundle_names = []
+            bundle_names.append(name)  # bundle of exactly this one module
+            if mod.is_package:
+                bundle_names.append(name + '-bundle')
+            while '.' in name:
+                name = name.rsplit('.', 1)[0]
+                bundle_names.append(name + '-bundle')
+            bcount += len(bundle_names)
+            # Add to bundles, create bundle if necesary
+            for name in bundle_names:
+                for suffix in ['.js', '.css']:
+                    bundle_name = name + suffix
+                    if bundle_name not in self._assets:
+                        self._assets[bundle_name] = Bundle(bundle_name)
+                    self._assets[bundle_name].add_module(mod)
+        
+        t = 'Asset store collected %i new modules, present in %i bundles.'
+        logger.info(t % (len(new_modules), bcount))
     
     def get_asset(self, name):
         """ Get the asset instance corresponding to the given name or None
@@ -609,28 +342,30 @@ class AssetStore:
         self._data[name] = data
         return '_data/shared/%s' % name  # relative path so it works /w export
     
-    def add_shared_asset(self, asset=None, **kwargs):
+    def add_shared_asset(self, name, source=None):
         """ Add a JS/CSS asset to share between sessions. It is an error
         to add an asset with a name that is already registered. See
         ``Session.add_asset()`` to set assets per-session.
         
-        The asset should be given either as an asset instance, or as keyword
-        arguments to create a new ``Asset``.
-        See :class:`Asset class <flexx.app.Asset>` for details.
+        Parameters:
+            name (str): the asset name, e.g. 'foo.js' or 'bar.css'. Can contain
+                slashes to emulate a file system. e.g. 'spam/foo.js'. If this
+                is a uri, then this is a "remote" asset (the client loads
+                the asset from the uri), and source should not be given.
+            source (str): the source code for this asset.
+                If this is a uri, the served loads the source from there (the
+                client loads the asset from the Flexx server as usual).
+        
+        Note: a uri is a string starting with 'http://', 'https://' or 'file://'.
+        The ``export()`` method provides control over how remote assets are
+        handled.
         """
-        if kwargs and asset is not None:
-            raise TypeError('add_shared_asset() needs either asset or kwargs.')
-        elif asset is not None:
-            if not isinstance(asset, Asset):
-                raise TypeError('add_shared_asset() asset arg must be an Asset.')
-            if asset.name in self._assets:
-                raise ValueError('add_shared_asset() %r is already set.' % asset.name)
-            self._assets[asset.name] = asset
-        elif kwargs:
-            self.add_shared_asset(Asset(**kwargs))
-        else:
-            raise TypeError('add_shared_asset() needs asset or kwargs.')
+        asset = Asset(name, source)
+        if asset.name in self._assets:
+            raise ValueError('add_shared_asset() %r is already set.' % asset.name)
+        self._assets[asset.name] = asset
     
+    # todo: remove?
     def get_asset_for_class(self, cls):
         """ Get the asset that provides the given Python class, or None
         """
@@ -638,7 +373,7 @@ class AssetStore:
             if cls in asset.sources:
                 return asset
         return None
-    
+    # todo: remove?
     def get_module_classes(self, module_name):
         """ Get the Model classes corrsesponding to the given module name
         and that are not already provided by an asset.
@@ -759,30 +494,38 @@ class SessionAssets:
             data = self._store.get_data(name)
         return data
     
-    def add_asset(self, asset=None, **kwargs):  # -> asset must already exist
+    def add_asset(self, name, source=None):
         """ Use the given JS/CSS asset in this session. It is safe to
         call this method with an already registered asset. See
         ``app.assets.add_shared_asset()`` to define shared assets.
         
-        The asset should be given either as an asset instance, the name of
-        an asset in the asset store, or as keyword arguments to create
-        a new ``Asset``. See :class:`Asset class <flexx.app.Asset>` for details.
+        If no source is given and the given name corresponds to a shared asset,
+        that shared asset is used in this session.
+        
+        Parameters:
+            name (str): the asset name, e.g. 'foo.js' or 'bar.css'. Can contain
+                slashes to emulate a file system. e.g. 'spam/foo.js'. If this
+                is a uri, then this is a "remote" asset (the client loads
+                the asset from the uri), and source should not be given.
+            source (str): the source code for this asset.
+                If this is a uri, the served loads the source from there (the
+                client loads the asset from the Flexx server as usual).
+        
+        Note: a uri is a string starting with 'http://', 'https://' or 'file://'.
+        The ``export()`` method provides control over how remote assets are
+        handled.
         """
-        if kwargs and asset is not None:
-            raise TypeError('Session.add_asset() needs either asset or kwargs.')
-        elif asset is not None:
-            # Get the actual asset instance
-            if isinstance(asset, str):
+        if source is None:
+            uri_starts = 'http://', 'https://', 'file://'
+            if name.startswith(uri_starts):
+                asset = Asset(name)
+            else:
                 asset = self._store.get_asset(asset)
                 if asset is None:
                     raise ValueError('Session.add_asset() got unknown asset name.')
-            elif not isinstance(asset, Asset):
-                raise TypeError('Session.add_asset() needs str, Asset or kwargs.')
-            self._register_asset(asset)
-        elif kwargs:
-            self.add_asset(Asset(**kwargs))
         else:
-            raise TypeError('Session.add_asset() needs asset or kwargs.')
+            asset = Asset(name, source)
+        self._register_asset(asset)
     
     def _register_asset(self, asset):
         """ Register an asset and also try to resolve dependencies.
@@ -799,25 +542,25 @@ class SessionAssets:
         # In dynamic case we load dependency first. In other cases we
         # do not as to avoid recursion with circular deps.
         if self._served:
-            self._collect_dependencies(asset, True)
+            # self._collect_dependencies(asset, True)
             self._inject_asset_dynamically(asset)
         elif asset is self._store.get_asset(asset.name):
             self._assets[asset.name] = None  # None means that asset is global
-            self._collect_dependencies(asset)
+            # self._collect_dependencies(asset)
         else:
             self._assets[asset.name] = asset
-            self._collect_dependencies(asset)
+            # self._collect_dependencies(asset)
     
-    def _collect_dependencies(self, asset, warn=False):
-        """ Register dependencies of the given asset.
-        """
-        for dep in asset.deps:
-            if dep not in self._assets:
-                if dep in self._store._assets:
-                    self._register_asset(self._store._assets[dep])
-                elif warn:
-                    logger.warn('Asset %r has unfulfilled dependency %r' %
-                                (asset.name, dep))
+    # def _collect_dependencies(self, asset, warn=False):
+    #     """ Register dependencies of the given asset.
+    #     """
+    #     for dep in asset.deps:
+    #         if dep not in self._assets:
+    #             if dep in self._store._assets:
+    #                 self._register_asset(self._store._assets[dep])
+    #             elif warn:
+    #                 logger.warn('Asset %r has unfulfilled dependency %r' %
+    #                             (asset.name, dep))
     
     def add_data(self, name, data):  # todo: add option to clear data after its loaded?
         """ Add data to serve to the client (e.g. images), specific to this
@@ -902,7 +645,8 @@ class SessionAssets:
             self._extra_model_classes.append(cls)
         else:
             # Define class dynamically via a single-class asset
-            # todo: convert a class to an asset
+            # todo: convert a class to a module and then an asset
+            1/0
             for asset in [Asset(cls.__name__ + '.js', [cls], [], []), 
                           Asset(cls.__name__ + '.css', [cls], [])]:
                 if asset.to_string().strip():
@@ -1015,6 +759,8 @@ class SessionAssets:
         
         # Append code for extra classes
         if self._extra_model_classes and 'extra-classes.js' not in self._assets:
+            # todo: to modules and then to bundle
+            1/0
             self.add_asset(Asset('extra-classes.js', self._extra_model_classes,
                                  deps=[], exports=[]))
             self.add_asset(Asset('extra-classes.css', self._extra_model_classes, []))
@@ -1055,7 +801,7 @@ class SessionAssets:
         js_assets.insert(0, self.get_asset('flexx-loader.js'))
         t = 'var flexx = {app_name: "%s", session_id: "%s"};' % (self._app_name,
                                                                  self.id)
-        js_assets.insert(0, Asset('embed/flexx-init.js', t, []))
+        js_assets.insert(0, Asset('embed/flexx-init.js', t))
         
         # Mark this session as served; all future asset loads are dynamic
         self._served = True
@@ -1086,7 +832,7 @@ class SessionAssets:
         lines.extend(['    flexx.command(%s);' % reprs(c) for c in commands])
         lines.append('};\n')
         # Create a session asset for it
-        self.add_asset(Asset('flexx-export.js', '\n'.join(lines), []))
+        self.add_asset('flexx-export.js', '\n'.join(lines))
         
         # Compose
         js_assets, css_assets = self.get_assets_in_order(True)

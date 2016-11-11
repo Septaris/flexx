@@ -267,7 +267,7 @@ from .stdlib import get_full_std_lib, get_all_std_names
 import sys
 
 class JSConstant:
-    def __init__(self, name):
+    def __init__(self, name='jsconstant'):
         self._name = name
     def __repr__(self):  # pragma: no cover
         return self._name

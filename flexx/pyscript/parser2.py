@@ -382,6 +382,14 @@ class Parser2(Parser1):
             code.append(self.lf('}'))
             return code
         
+        # Disable body if "not this_is_js()"
+        if (True and isinstance(node.test_node, ast.UnaryOp) and
+                     node.test_node.op == 'Not' and
+                     isinstance(node.test_node.right_node, ast.Call) and
+                     isinstance(node.test_node.right_node.func_node, ast.Name) and
+                     node.test_node.right_node.func_node.name == 'this_is_js'):
+            node.body_nodes = []
+        
         code = [self.lf('if (')]  # first part (popped in elif parsing)
         code.append(self._wrap_truthy(node.test_node))
         code.append(') {')

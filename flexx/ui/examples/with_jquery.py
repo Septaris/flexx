@@ -34,15 +34,15 @@ class Example(ui.Widget):
         if True:
             # Remote assets: the client will load these assets from the
             # URL's. Good for web apps.
-            self.session.add_asset(name=jquery_url)
-            self.session.add_asset(name=jquery_ui_url)
-            self.session.add_asset(name=jquery_css)
+            self.session.add_asset(jquery_url)
+            self.session.add_asset(jquery_ui_url)
+            self.session.add_asset(jquery_css)
         else:
             # Regular assets: Flexx will download the assets and serve
             # them to the client. Good for desktop apps.
-            self.session.add_asset(name='jquery.js', sources=jquery_url, deps=[])
-            self.session.add_asset(name='jquery-ui.js', sources=jquery_ui_url, deps=[])
-            self.session.add_asset(name='jquery-ui.css', sources=jquery_css, deps=[])
+            self.session.add_asset('jquery.js', jquery_url)
+            self.session.add_asset('jquery-ui.js', jquery_ui_url)
+            self.session.add_asset('jquery-ui.css', jquery_css)
         
         # Note that when exporting an app, one has the option to
         # embed/include remote assets.

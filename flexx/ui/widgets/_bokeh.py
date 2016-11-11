@@ -62,6 +62,7 @@ class BokehWidget(Widget):
                 res = os.path.abspath(
                     os.path.join(bokeh.__file__, '..', '..', 'bokehjs', 'build'))
             for x in ('css', 'js'):
+                # todo: fix me!
                 filename = os.path.join(res, x, modname + x)
                 app.assets.add_shared_asset(name=modname + x,
                                             sources='file://'+filename,
