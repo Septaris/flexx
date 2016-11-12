@@ -264,10 +264,10 @@ class AssetStore:
         # todo: where to test/skip __main__??
         new_modules = []
         for cls in Model.CLASSES:
-            if cls.__module__ not in self._modules:
-                module = JSModule(sys.modules[cls.__module__], self._modules)
+            if cls.__jsmodule__ not in self._modules:
+                module = JSModule(cls.__jsmodule__, self._modules)
                 new_modules.append(module)
-            self._modules[cls.__module__].use_variable(cls.__name__)
+            self._modules[cls.__jsmodule__].add_variable(cls.__name__)
         
         bcount = 0
         for mod in new_modules:
@@ -275,11 +275,9 @@ class AssetStore:
             name = mod.name
             bundle_names = []
             bundle_names.append(name)  # bundle of exactly this one module
-            if mod.is_package:
-                bundle_names.append(name + '-bundle')
             while '.' in name:
                 name = name.rsplit('.', 1)[0]
-                bundle_names.append(name + '-bundle')
+                bundle_names.append(name)
             bcount += len(bundle_names)
             # Add to bundles, create bundle if necesary
             for name in bundle_names:
@@ -289,8 +287,7 @@ class AssetStore:
                         self._assets[bundle_name] = Bundle(bundle_name)
                     self._assets[bundle_name].add_module(mod)
         
-        t = 'Asset store collected %i new modules, present in %i bundles.'
-        logger.info(t % (len(new_modules), bcount))
+        logger.info( 'Asset store collected %i new modules.' % len(new_modules))
     
     def get_asset(self, name):
         """ Get the asset instance corresponding to the given name or None
@@ -380,7 +377,7 @@ class AssetStore:
         """
         classes = list()
         for cls in get_model_classes():
-            if modname_startswith(cls.__module__, module_name):
+            if modname_startswith(cls.__jsmodule__, module_name):
                 if self.get_asset_for_class(cls) is None:
                     classes.append(cls)
         return classes
@@ -420,7 +417,7 @@ class SessionAssets:
         
         # Keep track of all assets for this session. Assets that are provided
         # by the asset store have a value of None.
-        self._modules = OrderedDict()
+        self._modules = set()
         self._assets = OrderedDict()
         # Data for this session (in addition to the data provided by the store)
         self._data = {}
@@ -428,8 +425,6 @@ class SessionAssets:
         self._served = False
         # Cache what classes we know (for performance)
         self._known_classes = set()
-        # Model classes that are not in an asset/module
-        self._extra_model_classes = []
     
     @property
     def id(self):
@@ -607,12 +602,6 @@ class SessionAssets:
             if cls2 not in self._known_classes:
                 self.register_model_class(cls2)
         
-        # We might need to collect
-        # todo: check __main__?
-        mod_name = cls.__module__
-        if mod_name not in self._store.modules:
-            self._store.collect_modules()
-        
         # Make sure that no two models have the same name, or we get problems
         # that are difficult to debug. Unless classes are defined in the notebook.
         same_name = [c for c in self._known_classes if c.__name__ == cls.__name__]
@@ -629,78 +618,29 @@ class SessionAssets:
         logger.debug('Registering Model class %r' % cls.__name__)
         self._known_classes.add(cls)  # todo: rename to used_classes
         
-        
-        js_module = self._store.modules.get(mod_name, None)
-        
-        if js_module is not None:
-            # cls is present in a module, add corresponding asset (overwrite ok)
-            if mod_name not in self._modules:
-                if self._served:
-                    # todo: convert a module to an asset
-                    self._register_asset(asset)
+        # Check if there is a definition for this class already
+        mod_name = cls.__jsmodule__
+        already_there = False
+        if mod_name in self._store.modules:
+            # We assume that the class is already present in a module ...
+            # ... unless its the main module, in that case we allow re-definitions
+            if mod_name == '__main__':
+                if cls.__name__ in self._store.modules[mod_name].variables:
+                    already_there = True
                 else:
-                    self._modules[mod_name] = js_module  # todo: None or js_module?
-        elif not self._served:
-            # Remember cls, will be served in session-specific asset
-            self._extra_model_classes.append(cls)
+                    self._store.modules[mod_name].add_variable(cls.__name__)
+            else:
+                already_there = True
         else:
-            # Define class dynamically via a single-class asset
-            # todo: convert a class to a module and then an asset
-            1/0
-            for asset in [Asset(cls.__name__ + '.js', [cls], [], []), 
-                          Asset(cls.__name__ + '.css', [cls], [])]:
-                if asset.to_string().strip():
-                    self._register_asset(asset)
-        # 
-        # ##
-        # 
-        # # Make sure the base classes are registered first
-        # for cls2 in cls.mro()[1:]:
-        #     if not issubclass(cls2, Model):  # True if cls2 is *the* Model class
-        #         break
-        #     if cls2 not in self._known_classes:
-        #         self.register_model_class(cls2)
-        # 
-        # # Make sure that no two models have the same name, or we get problems
-        # # that are difficult to debug. Unless classes are defined in the notebook.
-        # same_name = [c for c in self._known_classes if c.__name__ == cls.__name__]
-        # if same_name:
-        #     from .session import manager  # noqa - avoid circular import
-        #     same_name.append(cls)
-        #     is_interactive = self is manager.get_default_session()  # e.g. in notebook
-        #     is_dynamic_cls = not any([self._store.get_asset_for_class(c)
-        #                               for c in same_name])
-        #     if not (is_interactive and is_dynamic_cls):
-        #         raise RuntimeError('Cannot have multiple Model classes with the same '
-        #                            'name unless using interactive session and the '
-        #                            'classes are dynamically defined: %r' % same_name)
-        # 
-        # logger.debug('Registering Model class %r' % cls.__name__)
-        # self._known_classes.add(cls)
-        # 
-        # # Check if cls is covered by our assets
-        # asset_js = self._store.get_asset_for_class(cls)
-        # asset_css = None
-        # if asset_js:
-        #     asset_css = self._store.get_asset(asset_js.name[:-2] + 'css')
-        # 
-        # if asset_js:
-        #     # cls is present in a module, add corresponding asset (overwrite ok)
-        #     for asset in [asset_js, asset_css]:
-        #         if asset and asset.name not in self._assets:
-        #             if self._served:
-        #                 self._register_asset(asset)
-        #             else:
-        #                 self._assets[asset.name] = None
-        # elif not self._served:
-        #     # Remember cls, will be served in the index
-        #     self._extra_model_classes.append(cls)
-        # else:
-        #     # Define class dynamically via a single-class asset
-        #     for asset in [Asset(cls.__name__ + '.js', [cls], [], []), 
-        #                   Asset(cls.__name__ + '.css', [cls], [])]:
-        #         if asset.to_string().strip():
-        #             self._register_asset(asset)
+            self._store.collect_modules()
+        
+        # Add module to our list or define interactively
+        if self._served and not already_there:
+            asset = Bundle(mod_name)
+            asset.add_module(self._store.modules[mod_name])
+            self._register_asset(asset)
+        else:
+            self._modules.add(mod_name)
     
     def get_assets_in_order(self, css_reset=False):
         """ Get two lists containing the JS assets and CSS assets,
@@ -714,57 +654,30 @@ class SessionAssets:
         been served and that future asset loads should be done dynamically.
         """
         
-        def sort_modules(modules):
-            module_names = [mod.name for mod in modules]
-            for index in range(len(module_names)):
-                seen_names = []
-                while True:
-                    # Get module name on this position, check if its new
-                    name = module_names[index]
-                    if name in seen_names:
-                        raise RuntimeError('Detected circular dependency in modules!')
-                    seen_names.append(name)
-                    # Move deps in front of us if necessary
-                    for dep in self._modules[name].deps:
-                        if dep not in self._modules:  # todo: self._store.modules?
-                            logger.warn('Module %r has unfulfilled dependency %r' %
-                                        (name, dep))
-                        else:
-                            j = module_names.index(dep)
-                            if j > index:
-                                module_names.insert(index, module_names.pop(j))
-                                break  # do this index again; the dep we just moved
-                    else:
-                        break  # no changes, move to next index
-            return [self._modules[name] for name in module_names]
+        # Collect dependent assets
+        for mod_name in sorted(self._modules):
+            for a in mod.asset_deps:  # asset_deps has order already
+                assets.append(a)
         
-        # Put modules in correct load order
-        modules = sorted(self._modules.values(), key=lambda x:x.name)
-        modules = sort_modules(modules)
+        # Get bundle names that contain all our modules. In this step we can
+        # make a lot of choices with regard to how much modules we want to
+        # pack in a bundle. Could be different per packages, etc.
+        # For now, we just truncate at a certain level.
+        level = 3  # todo: this could be configurable, e.g. 99 for dev, 1 for prod
+        bundle_names = set()
+        for mod_name in self._modules:
+            bundle_names.add('.'.join(mod_name.split('.')[:level]))
         
-        # Create assets from modules and their dependencies
-        # todo: what about pyscript module deps?
-        js_assets = []
-        css_assets = []
-        for mod in modules:
-            for asset in mod.asset_deps:
-                if asset.name.lower().endswith('.js'):
-                    if asset not in js_assets:
-                        js_assets.append(asset)
-                else:
-                    if asset not in css_assets:
-                        css_assets.append(asset)
-            js_assets.append(self._store.get_asset(mod.name + '.js'))
-            css_assets.append(self._store.get_asset(mod.name + '.css'))
+        # Get bundles
+        js_assets = [self._store.get_asset(b + '.js') for b in bundle_names]
+        css_assets = [self._store.get_asset(b + '.css') for b in bundle_names]
         
-        # Append code for extra classes
-        if self._extra_model_classes and 'extra-classes.js' not in self._assets:
-            # todo: to modules and then to bundle
-            1/0
-            self.add_asset(Asset('extra-classes.js', self._extra_model_classes,
-                                 deps=[], exports=[]))
-            self.add_asset(Asset('extra-classes.css', self._extra_model_classes, []))
+        # Sort them
+        f = lambda m: m.name
+        js_assets = solve_dependencies(sorted(js_assets, key=f))
+        css_assets = solve_dependencies(sorted(css_assets, key=f))
         
+        # todo: ???
         # Add assets specific to this session
         for asset in self._assets:
             if asset.name.lower().endswith('.js'):

@@ -8,7 +8,7 @@ from . import logger
 
 def solve_dependencies(things, warn_missing=False):
     """ Given a list of things, which each have a ``name`` and ``deps``
-    attribute, sort the things to meet dependencies. In-place.
+    attribute, return a new list sorted to meet dependencies.
     """
     assert isinstance(things, list)
     names = [thing.name for thing in things]
@@ -31,10 +31,10 @@ def solve_dependencies(things, warn_missing=False):
                     j = names.index(dep)
                     if j > index:
                         names.insert(index, names.pop(j))
-                        things.insert(index, things.pop(j))
                         break  # do this index again; the dep we just moved
             else:
                 break  # no changes, move to next index
+    return [thingmap[name] for name in names]
 
 # todo: minification ...
 
@@ -189,18 +189,19 @@ class Bundle(Asset):
         self._need_sort = True
         
         # Add deps for this module
+        deps = set()
         for dep in m.deps:
             while '.' in dep:
-                self._deps.add(dep)
+                deps.add(dep)
                 dep = dep.rsplit('.', 1)[0]
-            self._deps.add(dep)
+            deps.add(dep)
         
         # Clear deps that are represented by this bundle
-        for dep in list(self._deps):
-            if dep.startswith(self._module_name):
-                self._deps.discard(dep)
-            elif self._module_name.startswith(dep + '.'):
-                self._deps.discard(dep)
+        ext = '.' + self.name.rsplit('.')[-1]
+        for dep in deps:
+            if not (dep.startswith(self._module_name) or
+                    self._module_name.startswith(dep + '.')):
+                self._deps.add(dep + ext)
     
     # todo: module_names?
     @property
@@ -216,8 +217,8 @@ class Bundle(Asset):
         """ The list of modules, sorted by dependencies.
         """
         if self._need_sort:
-            self._modules.sort(key=lambda m: m.name)
-            solve_dependencies(self._modules)
+            f = lambda m: m.name
+            self._modules = solve_dependencies(sorted(self._modules, key=f))
         return tuple(self._modules)
     
     @property

@@ -166,7 +166,7 @@ def test_modules():
     assert len(store) == 1
     
     # Add Foo, this will bring everything else in
-    m.use_variable('Foo')
+    m.add_variable('Foo')
     
     # Modules exists
     assert len(store) == 5
@@ -214,7 +214,7 @@ def test_modules():
     assert 'atan' not in store['flexx_lib3'].get_js()
     
     # Use more of foo module
-    m.use_variable('do_more')
+    m.add_variable('do_more')
     
     # Now, lib4 is used
     assert len(store) == 6
@@ -234,9 +234,9 @@ def test_misc():
     # repr
     m = JSModule(flexx_foo, store)
     assert '0' in repr(m)
-    m.use_variable('do_something')
+    m.add_variable('do_something')
     assert '1' in repr(m)
-    m.use_variable('do_more')
+    m.add_variable('do_more')
     assert '3' in repr(m)  # also the const
     
     # Deps
@@ -244,42 +244,42 @@ def test_misc():
     assert 'flexx_lib3' in m.deps
     assert 'flexx_lib4' in m.deps
     #
-    m.use_variable('Foo')
+    m.add_variable('Foo')
     assert len(m.deps) == 3
     assert 'flexx.app.model' in m.deps
 
 
-def test_use_variable():
+def test_add_variable():
     import flexx_foo
     import flexx_bar
     store = {}
     
     m = JSModule(flexx_foo, store)
-    m.use_variable('Foo')
+    m.add_variable('Foo')
     
-    # use_variable is ignored for pyscript mods
+    # add_variable is ignored for pyscript mods
     assert not store['flexx_lib1'].deps
     with capture_log('info') as log:
-        store['flexx_lib1'].use_variable('spam')  
+        store['flexx_lib1'].add_variable('spam')  
     assert not log
     
-    # use_variable warns for other mods
+    # add_variable warns for other mods
     with capture_log('info') as log:
-        store['flexx_lib2'].use_variable('spam')  
+        store['flexx_lib2'].add_variable('spam')  
     assert len(log) == 1 and 'does not have variable' in log[0]
     
     
     m = JSModule(flexx_bar, store)
     
     # Can use stuff from module if its a __pyscript__ modules
-    m.use_variable('use_flexx_lib1')
+    m.add_variable('use_flexx_lib1')
     
     # Even if name makes no sense; maybe it has exports that we do not know of
-    m.use_variable('use_flexx_lib1_wrong')
+    m.add_variable('use_flexx_lib1_wrong')
     
     # But not for regular modules
     with raises(ValueError) as err:
-        m.use_variable('use_flexx_lib2')
+        m.add_variable('use_flexx_lib2')
     assert '__pyscript__' in str(err)
 
 
@@ -290,14 +290,14 @@ def test_subclasses():
     
     # Using a class CC > BB > AA > object
     store = {}
-    JSModule(flexx_foo, store).use_variable('Foo')
+    JSModule(flexx_foo, store).add_variable('Foo')
     m = JSModule(flexx_bar, store)
     #
     assert 'CC' not in m.get_js()
     assert 'BB' not in m.get_js()
     assert 'AA' not in store['flexx_lib2'].get_js()
     #
-    m.use_variable('CC')
+    m.add_variable('CC')
     assert 'CC' in m.get_js()
     assert 'BB' in m.get_js()
     assert 'AA' in store['flexx_lib2'].get_js()
@@ -307,7 +307,7 @@ def test_subclasses():
     m = JSModule(flexx_bar, store)
     assert 'flexx_foo' not in store
     #
-    m.use_variable('Spam')
+    m.add_variable('Spam')
     assert 'flexx_foo' in store
     assert 'flexx.app.model' in store
     
@@ -316,7 +316,7 @@ def test_subclasses():
     m = JSModule(flexx_bar, store)
     assert 'flexx_foo' not in store
     #
-    m.use_variable('Foo')
+    m.add_variable('Foo')
     assert 'flexx_foo' in store
     assert 'flexx.app.model' in store
 
@@ -350,19 +350,19 @@ def test_fails():
     # Untranspilable
     m = JSModule(flexx_bar, {})
     with raises(ValueError) as err:
-        m.use_variable('cannot_transpile')
+        m.add_variable('cannot_transpile')
     assert 'cannot transpile' in str(err)
     
     # Unserializable
     m = JSModule(flexx_bar, {})
     with raises(ValueError) as err:
-        m.use_variable('cannot_serialize')
+        m.add_variable('cannot_serialize')
     assert 'cannot serialize' in str(err)
     
     # Un-anythingable
     m = JSModule(flexx_bar, {})
     with raises(ValueError) as err:
-        m.use_variable('cannot_do_anything')
+        m.add_variable('cannot_do_anything')
     assert 'cannot convert' in str(err)
 
 
@@ -373,7 +373,7 @@ if __name__ == '__main__':
 
     test_modules()
     test_misc()
-    test_use_variable()
+    test_add_variable()
     test_subclasses()
     test_fails()
     

@@ -65,6 +65,7 @@ attributes and handlers can be created here.
 
 """
 
+import sys
 import json
 import weakref
 import threading
@@ -210,6 +211,11 @@ class ModelMeta(HasEventsMeta):
                     if getattr(cls, name) is not getattr(cls.JS, name, None)]
         cls.JS.__local_properties__ = [name for name in cls.JS.__properties__
                     if getattr(cls.JS, name) is not getattr(cls, name, None)]
+        
+        # Write __jsmodule__; an optimization for our module/asset system
+        cls.__jsmodule__ = cls.__module__
+        if sys.modules[cls.__module__].__package__ == cls.__module__:
+            cls.__jsmodule__ += '.__init__'
         
         # Set JS, META, and CSS for this class
         cls.JS.CODE = cls._get_js()
