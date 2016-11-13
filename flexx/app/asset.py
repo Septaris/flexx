@@ -46,15 +46,22 @@ class Asset:
             slashes to emulate a file system. e.g. 'spam/foo.js'. If this
             is a uri, then this is a "remote" asset (the client loads
             the asset from the uri).
-        source (str): the source code for this asset.
+        source (str, None): the source code for this asset.
             If this is a uri, the served loads the source from there (the
             client loads the asset from the Flexx server as usual).
+        lazy (bool, func, optional): If True, the asset is loaded on the page
+            *after* the module assets. If it is a function, it will be called to
+            produce the source when it is needed. This allows defining assets
+            that don't cause any work or have side effects, unless they're
+            actually used.
     
     Note: a uri is a string starting with 'http://', 'https://' or 'file://'.
     The ``app.export()`` method provides control over how remote assets are
     handled.
     
     """
+    
+    _counter = 0
     
     def __init__(self, name, source=None):
         
@@ -66,6 +73,9 @@ class Asset:
         if not name.lower().endswith(('.js', '.css')):
             raise ValueError('Asset name must end in .js or .css.')
         self._name = name
+        
+        Asset._counter += 1  # so we can sort assets by their instantiation order
+        self.i = Asset._counter
         
         # Handle source
         if source is None:
@@ -95,6 +105,12 @@ class Asset:
         return self._name
     
     @property
+    def source(self):
+        """ The string source for this asset, or None if its a remote asset.
+        """
+        return self._source
+    
+    @property
     def remote(self):
         """ If the asset is remote (client will load it from elsewhere), then 
         this is the corresponding URI. Otherwise this is None.
@@ -102,10 +118,10 @@ class Asset:
         return self._remote
     
     @property
-    def source(self):
-        """ The string source for this asset, or None if its a remote asset.
+    def lazy(self):
+        """ Whether this is a lazy asset.
         """
-        return self._source
+        return False
     
     def to_html(self, path='{}', link=2):
         """ Get HTML element tag to include in the document.

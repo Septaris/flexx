@@ -7,6 +7,11 @@ frameworks.
 
 from flexx import app, ui
 
+# todo: test dymic loading of these assets
+jquery = app.Asset("http://code.jquery.com/jquery-1.10.2.js")
+jquery_ui = app.Asset("http://code.jquery.com/ui/1.11.4/jquery-ui.js")
+jq_css = app.Asset("http://code.jquery.com/ui/1.11.4/themes/smoothness/jquery-ui.css")
+
 
 class DatePicker(ui.Widget):
     

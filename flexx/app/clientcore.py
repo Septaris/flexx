@@ -6,6 +6,8 @@ from ..pyscript import py2js, undefined, window
 
 flexx = location = require = module = typeof = None  # fool PyFlakes
 
+from .serializer import Serializer
+
 
 @py2js(inline_stdlib=False)
 class FlexxJS:
@@ -277,3 +279,8 @@ class FlexxJS:
         }
         return result;
         """
+
+
+## Create core Flexx code
+
+JS = 

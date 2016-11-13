@@ -276,11 +276,7 @@ def init_notebook():
     # is imported. This is not strictly necessary, since Flexx can
     # dynamically load the assets, but it is nicer to do it here.
     # todo: make the session load all imported assets, not only the used ones
-    try:
-        session.add_asset('flexx-ui.css')
-        session.add_asset('flexx-ui.js')
-    except IndexError:
-        pass
+    
     
     # Get assets
     js_assets, css_assets = session.get_assets_in_order(css_reset=False)

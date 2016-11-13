@@ -31,7 +31,22 @@ from ... import event, app
 from ...pyscript import window
 from . import Widget
 
-Bokeh = None  # fool flakes
+
+def load_bokeh(ext):
+    def _load_bokeh():
+        import bokeh
+        dev = os.environ.get('BOKEH_RESOURCES', '') == 'relative-dev'
+        res = bokeh.resources.bokehjsdir()
+        if dev:
+            res = os.path.abspath(os.path.join(bokeh.__file__,
+                                               '..', '..', 'bokehjs', 'build'))
+        modname = 'bokeh' if dev else 'bokeh.min'
+        filename = os.path.join(res, ext, modname + '.' + ext)
+        return open(filename,'rb').read()
+    return _load_bokeh
+
+# Bokeh = app.Asset('bokeh.js', load_bokeh('js'))
+# Bokeh_css = app.Asset('bokeh.css', load_bokeh('css'))
 
 
 class BokehWidget(Widget):
@@ -51,22 +66,22 @@ class BokehWidget(Widget):
     
     def init(self):
         
-        # Handle client dependencies
-        import bokeh
-        dev = os.environ.get('BOKEH_RESOURCES', '') == 'relative-dev'
-        modname = 'bokeh.' if dev else 'bokeh.min.'
-        # Make sure we have Bokeh registered as a global asset
-        if not (modname + 'js') in app.assets.get_asset_names():
-            res = bokeh.resources.bokehjsdir()
-            if dev:
-                res = os.path.abspath(
-                    os.path.join(bokeh.__file__, '..', '..', 'bokehjs', 'build'))
-            for x in ('css', 'js'):
-                # todo: fix me!
-                filename = os.path.join(res, x, modname + x)
-                app.assets.add_shared_asset(name=modname + x,
-                                            sources='file://'+filename,
-                                            deps=[])
+        # # Handle client dependencies
+        # import bokeh
+        # dev = os.environ.get('BOKEH_RESOURCES', '') == 'relative-dev'
+        # modname = 'bokeh.' if dev else 'bokeh.min.'
+        # # Make sure we have Bokeh registered as a global asset
+        # if not (modname + 'js') in app.assets.get_asset_names():
+        #     res = bokeh.resources.bokehjsdir()
+        #     if dev:
+        #         res = os.path.abspath(
+        #             os.path.join(bokeh.__file__, '..', '..', 'bokehjs', 'build'))
+        #     for x in ('css', 'js'):
+        #         # todo: fix me!
+        #         filename = os.path.join(res, x, modname + x)
+        #         app.assets.add_shared_asset(name=modname + x,
+        #                                     sources='file://'+filename,
+        #                                     deps=[])
         # Make this session use the Bokeh asset
         # todo: use remote asset from CDN?
         for x in ('css', 'js'):
