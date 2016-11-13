@@ -2,12 +2,6 @@
 Flexx asset and data management system. The purpose of these classes
 is to provide the assets (JavaScript and CSS files) and data (images,
 etc.) needed by the applications.
-
-Flexx makes a dinstinction between shared assets and session-specific
-assets. Most source code for e.g. the widgets is served as a shared asset,
-but app-specific classes and session-specific data can be served
-per-session (and is deleted when the session is closed).
-
 """
 
 import os
@@ -20,8 +14,8 @@ from urllib.request import urlopen
 from collections import OrderedDict
 
 from .model import Model
-from .modules import JSModule, HEADER
-from .asset import Asset, Bundle, solve_dependencies
+from .modules import JSModule
+from .asset import Asset, Bundle, solve_dependencies, HEADER
 from ..pyscript import create_js_module, get_all_std_names, get_full_std_lib
 from . import logger
 
@@ -50,7 +44,6 @@ ASSET-HOOK
 # create a private namespace. The modules must follow this pattern:
 # define(name, dep_strings, function (name1, name2) {...});
 
-# todo: move to clientcore?
 LOADER = """
 /*Flexx module loader. Licensed by BSD-2-clause.*/
 
@@ -157,10 +150,6 @@ td,th{padding:0}
 reprs = json.dumps
 
 
-def modname_startswith(x, y):
-    return (x + '.').startswith(y + '.')
-
-
 # Use the system PRNG for session id generation (if possible)
 # NOTE: secure random string generation implementation is adapted
 #       from the Django project. 
@@ -220,15 +209,19 @@ def export_assets_and_data(assets, data, dirname, app_id, clear=False):
 class AssetStore:
     """
     Provider of shared assets (CSS, JavaScript) and data (images, etc.).
+    Keeps track of JSModules and makes them available via asset bundles.
     The global asset store object can be found at ``flexx.app.assets``.
     Assets and data in the asset store can be used by all sessions.
-    Each session object also keeps track of assets and data. Using
-    ``session.add_asset(str_name)`` makes a session use a shared asset.
+    Each session object also keeps track of data. 
+    
+    Assets with additional JS or CSS to load can be used simply by
+    creating/importing them in a module that defines the Model class
+    that needs the asset.
     """
     
     def __init__(self):
-        self._modules = dict()
-        self._assets = OrderedDict()
+        self._modules = {}
+        self._assets = {}
         self._data = {}
         self._assets['reset.css'] = Asset('reset.css', RESET)
         self._assets['flexx-loader.js'] = Asset('flexx-loader.js', LOADER)
@@ -236,7 +229,7 @@ class AssetStore:
         # Create pyscript-std module
         func_names, method_names = get_all_std_names()
         mod = create_js_module('pyscript-std.js', get_full_std_lib(),
-                                   [], func_names + method_names, 'amd-flexx')
+                               [], func_names + method_names, 'amd-flexx')
         self._assets['pyscript-std.js'] = Asset('pyscript-std.js', HEADER + mod)
     
     def __repr__(self):
@@ -258,15 +251,20 @@ class AssetStore:
     def collect_modules(self):
         """ Collect JS modules corresponding to Python modules that define
         Model classes. It is safe (and pretty fast) to call this more than once
-        since only missing modules are added.
+        since only missing modules are added. This gets called automatically
+        by the Session object.
         """
         # todo: where to test/skip __main__??
+        
+        # Make sure we have all necessary modules. Dependencies can drag in
+        # more modules, therefore we store what modules we know of beforehand.
         current_module_names = set(self._modules)
         for cls in Model.CLASSES:
             if cls.__jsmodule__ not in self._modules:
                 JSModule(cls.__jsmodule__, self._modules)  # auto-registers
             self._modules[cls.__jsmodule__].add_variable(cls.__name__)
         
+        # Deal with new modules: tore asset deps and bundle the modules
         mcount = 0
         bcount = 0
         for name in self._modules:
@@ -274,6 +272,9 @@ class AssetStore:
                 continue
             mod = self.modules[name]
             mcount += 1
+            # Register asset deps
+            for asset in mod.asset_deps:
+                self._assets[asset.name] = asset
             # Get names of bundles to add this module to
             bundle_names = []
             bundle_names.append(name)  # bundle of exactly this one module
@@ -288,9 +289,6 @@ class AssetStore:
                     if bundle_name not in self._assets:
                         self._assets[bundle_name] = Bundle(bundle_name)
                     self._assets[bundle_name].add_module(mod)
-            # Register asset deps
-            for asset in mod.asset_deps:
-                self._assets[asset.name] = asset
         
         logger.info('Asset store collected %i new modules.' % mcount)
     
@@ -365,9 +363,10 @@ assets = AssetStore()
 class SessionAssets:
     """ Provider for assets of a specific session. Inherited by Session.
     
-    Assets included on the document consist of the page assets
-    registered on the session, plus the (shared) page assets that these
-    depend on.
+    The responsibility of this class is to keep track of what JSModules
+    are being used, to provide the associated bundles and assets, and to
+    dynamically define assets when needed. Further this class takes
+    care of per-session data.
     """
     
     def __init__(self, store=None):  # Allow custom store for testing
@@ -394,6 +393,7 @@ class SessionAssets:
         """
         return self._id
     
+    # todo: ditch this? if not needed by export
     def get_asset_names(self):
         """ Get a list of names of the assets used by this session, in
         the order that they were added.
@@ -415,6 +415,9 @@ class SessionAssets:
         if data is None:
             data = self._store.get_data(name)
         return data
+    
+    # todo: the way that we do assets now makes me wonder whether there are better ways
+    # to deal with data handling ...
     
     def add_data(self, name, data):  # todo: add option to clear data after its loaded?
         """ Add data to serve to the client (e.g. images), specific to this
@@ -534,13 +537,13 @@ class SessionAssets:
     
     def get_assets_in_order(self, css_reset=False, load_all=False):
         """ Get two lists containing the JS assets and CSS assets,
-        respectively. The assets contain all assets in use and their
-        dependencies. The order is based on the dependency resolution
-        and the order in which assets were registered via
-        ``add_asset()``. Special assets are added, such as the CSS reset,
-        the JS loader, and CSS and JS for classes not defined in a module.
+        respectively. The assets contain bundles corresponding to all modules
+        being used (and their dependencies). The order of bundles is based on
+        the dependency resolution. The order of other assets is based on the
+        order in which assets were instantiated. Special assets are added, such
+        as the CSS reset and the JS module loader.
         
-        When this function gets called, it is assumed that the assets have
+        After this function gets called, it is assumed that the assets have
         been served and that future asset loads should be done dynamically.
         """
         
@@ -550,12 +553,13 @@ class SessionAssets:
             modules_to_load = self._used_modules
         
         # Get bundle names that contain all the used modules. We use
-        # bundled versions, which means that we load more modules than
+        # bundledversions, which means that we load more modules than
         # we use. In this step we can make a lot of choices with regard
-        # to how much modules we want to pack in a bundle. Could be
-        # different per branch, we could create session-specific bundles, etc.
-        # For now, we just truncate at a certain level.
-        level = 3  # todo: this could be configurable, e.g. 99 for dev, 1 for prod
+        # to how much modules we want to pack in a bundle. We could use
+        # a different depth per branch, we could create session-specific
+        # bundles, we could allow users to define a bundle, etc. For
+        # now, we just truncate at a certain level.
+        level = 2  # todo: this could be configurable, e.g. 99 for dev, 1 for prod
         bundle_names = set()
         for mod_name in modules_to_load:
             bundle_names.add('.'.join(mod_name.split('.')[:level]))
@@ -564,15 +568,19 @@ class SessionAssets:
         js_assets = [self._store.get_asset(b + '.js') for b in bundle_names]
         css_assets = [self._store.get_asset(b + '.css') for b in bundle_names]
         
+        # Sort bundles by name and dependency resolution
+        f = lambda m: (m.name.startswith('__main__'), m.name)
+        js_assets = solve_dependencies(sorted(js_assets, key=f))
+        css_assets = solve_dependencies(sorted(css_assets, key=f))
+        
+        # Filter out empty css bundles
+        css_assets = [asset for asset in css_assets
+                      if any([m.get_css().strip() for m in asset.modules])]
+        
         # Get what modules we loaded (we need this info in interactive mode)
         for bundle in js_assets:
             for mod in bundle.modules:
                 self._loaded_modules.add(mod.name)
-        
-        # Sort them
-        f = lambda m: (m.name.startswith('__main__'), m.name)
-        js_assets = solve_dependencies(sorted(js_assets, key=f))
-        css_assets = solve_dependencies(sorted(css_assets, key=f))
         
         # Collect non-module assets
         # Normal assets are included if they are in a module that is loaded,
@@ -583,11 +591,10 @@ class SessionAssets:
             for asset in self._store.modules[mod_name].asset_deps:
                 if asset.lazy:
                     asset_deps_after.add(asset)
-        for bundle in js_assets:
-            for mod in bundle.modules:
-                for asset in mod.asset_deps:
-                    if not asset.lazy:
-                        asset_deps_before.add(asset)
+        for mod_name in self._loaded_modules:
+            for asset in self._store.modules[mod_name].asset_deps:
+                if not asset.lazy:
+                    asset_deps_before.add(asset)
         
         # Push assets in the lists (sorted by the creation time)
         f = lambda a: a.i
@@ -602,7 +609,7 @@ class SessionAssets:
             else:
                 css_assets.append(asset)
         
-        # Mark al assets as used. For now, we only use assets that are available
+        # Mark all assets as used. For now, we only use assets that are available
         # in the asset store.
         for asset in js_assets + css_assets:
             self._assets[asset.name] = None
@@ -612,14 +619,11 @@ class SessionAssets:
         if css_reset:
             css_assets.insert(0, self._store.get_asset('reset.css'))
         
-        # Prepend pyscript std
+        # Prepend flexx-info, module loader, and pyscript std
         js_assets.insert(0, self._store.get_asset('pyscript-std.js'))
-        
-        # Prepend loader
         js_assets.insert(0, self._store.get_asset('flexx-loader.js'))
-        t = 'var flexx = {app_name: "%s", session_id: "%s"};' % (self._app_name,
-                                                                 self.id)
-        js_assets.insert(0, Asset('embed/flexx-init.js', t))
+        t = 'var flexx = {app_name: "%s", session_id: "%s"};'
+        js_assets.insert(0, Asset('flexx-info.js', t % (self._app_name, self.id)))
         
         # Mark this session as served; all future asset loads are dynamic
         self._served = True
@@ -668,7 +672,7 @@ class SessionAssets:
                 if not link:
                     html = asset.to_html('{}', link)
                 else:
-                    if asset.name.startswith('embed/'):
+                    if asset.name.endswith('-info.js'):
                         html = asset.to_html('', 0)
                     elif self._store.get_asset(asset.name) is not asset:
                         html = asset.to_html(pre_path + '/%s/{}' % self.id, link)
