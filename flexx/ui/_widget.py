@@ -13,7 +13,6 @@ from .. import event
 from ..app import Model, get_active_model, Asset
 from ..pyscript import undefined, window
 from ..util.getresource import get_resource
-from . import logger
 
 
 # Define Phosphor assets. By having them in this module, any code that

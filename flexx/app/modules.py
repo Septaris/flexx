@@ -2,8 +2,7 @@ import sys
 import json
 import types
 
-from ..pyscript import (py2js, JSConstant,
-                        create_js_module, get_all_std_names, get_full_std_lib)
+from ..pyscript import py2js, JSConstant, create_js_module, get_all_std_names
 
 from .model import Model
 from .asset import Asset
@@ -43,9 +42,11 @@ def get_mod_name(ob):
     """
     if not isinstance(ob, types.ModuleType):
         ob = sys.modules[ob.__module__]
-    name = ob.__name__
-    if ob.__package__ == name:
-        name += '.__init__'
+    name = getattr(ob, '__pyscript__', None)
+    if not (name and isinstance(name, str)):
+        name = ob.__name__
+        if ob.__package__ == name:
+            name += '.__init__'
     return name
 
 
@@ -106,7 +107,7 @@ class JSModule:
         
         # Store module and name
         self._pymodule = sys.modules[py_name]
-        self._name = name
+        self._name = get_mod_name(self._pymodule)
         
         # Check if name matches the kind of module
         is_package = self._pymodule.__package__ == self._pymodule.__name__
@@ -205,6 +206,9 @@ class JSModule:
             if isinstance(val, Asset):
                 self._imported_names.add(name)
                 self._asset_deps.append(val)
+            # elif isinstance(val, types.ModuleType):
+            #     if getattr(val, '__pyscript__', False):
+            #         self._import(m, val.__name__, name, None)
     
     @property
     def variables(self):
@@ -297,6 +301,15 @@ class JSModule:
                 raise ValueError(t % (self.name, name, str(err)))
             self._provided_names.add(name)
             self._json_values.append('var %s = %s;' % (name, js))
+        
+        elif (getattr(val, '__module__', None) and
+              getattr(sys.modules[val.__module__], '__pyscript__', False) and
+              val is getattr(sys.modules[val.__module__], name, 'unlikely-val')):
+            # An instance from a pyscript module!
+            # We cannot know the "name" as its known in the module, but
+            # we assume that its the same as as_name and test whether
+            # it matches in the test above.
+            self._import(val.__module__, name, name)
         
         else:
             # Cannot convert to JS

@@ -11,21 +11,18 @@ per-session (and is deleted when the session is closed).
 """
 
 import os
-import sys
 import json
 import time
-import types
 import random
 import shutil
 import hashlib
 from urllib.request import urlopen
 from collections import OrderedDict
 
-from .model import Model, get_model_classes
+from .model import Model
 from .modules import JSModule, HEADER
 from .asset import Asset, Bundle, solve_dependencies
-from ..pyscript import (py2js, Parser,
-                        create_js_module, get_all_std_names, get_full_std_lib)
+from ..pyscript import create_js_module, get_all_std_names, get_full_std_lib
 from . import logger
 
 
@@ -267,7 +264,7 @@ class AssetStore:
         current_module_names = set(self._modules)
         for cls in Model.CLASSES:
             if cls.__jsmodule__ not in self._modules:
-                module = JSModule(cls.__jsmodule__, self._modules)
+                JSModule(cls.__jsmodule__, self._modules)  # auto-registers
             self._modules[cls.__jsmodule__].add_variable(cls.__name__)
         
         mcount = 0
@@ -295,7 +292,7 @@ class AssetStore:
             for asset in mod.asset_deps:
                 self._assets[asset.name] = asset
         
-        logger.info( 'Asset store collected %i new modules.' % mcount)
+        logger.info('Asset store collected %i new modules.' % mcount)
     
     def get_asset(self, name):
         """ Get the asset instance corresponding to the given name or None

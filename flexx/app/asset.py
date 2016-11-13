@@ -1,6 +1,4 @@
-import os
 import sys
-import types
 from urllib.request import urlopen
 
 from . import logger
